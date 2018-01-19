@@ -1,0 +1,45 @@
+From 77c3f88f4807fb07d0ce6c26ef86d0c7eb196f8b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kjell-Magne=20=C3=98ierud?= <kjellm@acm.org>
+Date: Tue, 10 May 2011 15:22:52 +0200
+Subject: [PATCH] More robust section parsing of INNODB STATUS. closes #37
+
+---
+ mysql_ | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/mysql_ b/mysql_
+index 390b388..95cd25d 100755
+--- a/mysql_
++++ b/mysql_
+@@ -1508,7 +1508,7 @@ sub parse_innodb_status {
+ 
+     # Add a dummy section to the end in case the innodb status output
+     # has been truncated (Happens for status > 64K characters)
+-    $_ .= "\n----------\nDUMMY\n"; 
++    $_ .= "\n----------\nDUMMY\n----------\n"; 
+ 
+     my %section_map = (
+ 
+@@ -1560,7 +1560,12 @@ my $innodb_bigint_rx = qr{([[a-fA-F\d]+)(?: (\d+))?};
+ # ------------------
+ # ---TRANSACTION 1 2450838625, ACTIVE 831 sec, OS thread id 27 fetching rows, thread declared inside InnoDB 104
+ 
+-sub match_dashes { return m/\G-+\n(?!-)/gc; }
++sub match_new_section { 
++    return m/\G
++             -+\n                 # --------------------------- 
++             (?= [A-Z\/ ]+\n      # SECTION NAME
++                 [=-]+\n)/gcx;    # --------------------------- ('=' on end of output)
++}
+ 
+ 
+ sub skip_line    { return m/\G.*\n/gc; }
+@@ -1579,7 +1584,7 @@ sub parse_section {
+ 
+     #warn substr($_, pos(), 10);
+     for (;;) {
+-        return if match_dashes();
++        return if match_new_section;
+         next if $parser->();
+         skip_line();
+     }
