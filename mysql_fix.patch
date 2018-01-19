@@ -1,0 +1,223 @@
+From 9f53020cc7aa5338b9983cab3c1f233ffd349576 Mon Sep 17 00:00:00 2001
+From: y-ken <y.ken.studio@gmail.com>
+Date: Sat, 22 Jun 2013 01:47:20 +0900
+Subject: [PATCH 1/4] Add support for MySQL 5.5/5.6
+
+The mysql plugin named "mysql_" have a problem. So It could not work
+fine with MySQL 5.5 or 5.6.
+I have make a patch for "INDIVIDUAL BUFFER POOL INFO" section as
+skipped to work.
+
+## all of symlinked mysql_ pluugin gets error like below.
+```sh
+$ /etc/munin/plugins/mysql_connections
+Unknown section: INDIVIDUAL BUFFER POOL INFO at
+/etc/munin/plugins/mysql_connections line 1098.
+```
+
+## related issue
+https://github.com/kjellm/munin-mysql/commit/111293966ccd6e8df6c1347cb0f
+9a8b4025c0266
+---
+ plugins/node.d/mysql_.in | 19 ++++++++++---------
+ 1 file changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/plugins/node.d/mysql_.in b/plugins/node.d/mysql_.in
+index 76c214a1a..42d725c6c 100644
+--- a/plugins/node.d/mysql_.in
++++ b/plugins/node.d/mysql_.in
+@@ -1071,17 +1071,18 @@ sub parse_innodb_status {
+ 
+     my %section_map = (
+ 
+-	'BUFFER POOL AND MEMORY'   => \&parse_buffer_pool_and_memory,
+-	'FILE I/O'                 => \&parse_file_io,
++	'BUFFER POOL AND MEMORY'      => \&parse_buffer_pool_and_memory,
++	'INDIVIDUAL BUFFER POOL INFO' => \&skip,
++	'FILE I/O'                    => \&parse_file_io,
+ 	'INSERT BUFFER AND ADAPTIVE HASH INDEX'
+ 	    => \&parse_insert_buffer_and_adaptive_hash_index,
+-	'LATEST DETECTED DEADLOCK' => \&skip,
+-	'LATEST FOREIGN KEY ERROR' => \&skip,
+-	'LOG'                      => \&parse_log,
+-	'ROW OPERATIONS'           => \&skip,
+-	'SEMAPHORES'               => \&parse_semaphores,
+-	'TRANSACTIONS'             => \&parse_transactions,
+-	'BACKGROUND THREAD'        => \&skip,
++	'LATEST DETECTED DEADLOCK'    => \&skip,
++	'LATEST FOREIGN KEY ERROR'    => \&skip,
++	'LOG'                         => \&parse_log,
++	'ROW OPERATIONS'              => \&skip,
++	'SEMAPHORES'                  => \&parse_semaphores,
++	'TRANSACTIONS'                => \&parse_transactions,
++	'BACKGROUND THREAD'           => \&skip,
+     );
+ 
+     skip_heading();
+
+From 64a98a135f3d48af6b2fd8cc9325ec7db741dd17 Mon Sep 17 00:00:00 2001
+From: y-ken <y.ken.studio@gmail.com>
+Date: Sat, 22 Jun 2013 02:01:34 +0900
+Subject: [PATCH 2/4] mysql_innodb_insert_buf compatibility problem fixed for
+ MySQL 5.5/5.6
+
+The mysql plugin named "mysql_" have a problem. So It could not work
+fine with MySQL 5.5 or 5.6.
+I have make a patch for "mysql_innodb_insert_buf" to work.
+
+## symlinked from mysql_innodb_insert_buf to mysql_ pluugin gets error
+below.
+```sh
+$ /etc/munin/plugins/mysql_innodb_insert_buf
+Use of uninitialized value in printf at
+/etc/munin/plugins/mysql_innodb_insert_buf line 885.
+ib_ibuf_inserts.value
+Use of uninitialized value in printf at
+/etc/munin/plugins/mysql_innodb_insert_buf line 885.
+ib_ibuf_merged_rec.value
+Use of uninitialized value in printf at
+/etc/munin/plugins/mysql_innodb_insert_buf line 885.
+ib_ibuf_merges.value
+```
+
+## related issue
+https://github.com/kjellm/munin-mysql/issues/34#issuecomment-1487824
+---
+ plugins/node.d/mysql_.in | 33 +++++++++++++++++++++++++--------
+ 1 file changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/plugins/node.d/mysql_.in b/plugins/node.d/mysql_.in
+index 42d725c6c..cfdceb8f4 100644
+--- a/plugins/node.d/mysql_.in
++++ b/plugins/node.d/mysql_.in
+@@ -882,8 +882,11 @@ sub show {
+ 	if $graph_name =~ /innodb_/ && $data->{_innodb_disabled};
+ 
+     for my $ds (@{$graph->{data_sources}}) {
+-	printf "%s.value %s\n",
+-	    clean_fieldname($ds->{name}), $data->{$ds->{name}};
++        my $value = exists $ds->{value}
++            ? $ds->{value}($data)
++                : $data->{$ds->{name}};
++
++        printf "%s.value %s\n", clean_fieldname($ds->{name}), defined($value) ? $value : 'U';
+     }
+ 
+     return 0;
+@@ -1214,12 +1217,26 @@ sub parse_file_io {
+ sub parse_insert_buffer_and_adaptive_hash_index {
+     parse_section(
+ 	sub {
+-	    m/\G(\d+) inserts, (\d+) merged recs, (\d+) merges\n/gc && do {
+-		$data->{ib_ibuf_inserts}    = $1;
+-		$data->{ib_ibuf_merged_rec} = $2;
+-		$data->{ib_ibuf_merges}     = $3;
+-		return 1;
+-	    };
++            # MySQL < 5.5
++            m/\G(\d+) inserts, (\d+) merged recs, (\d+) merges\n/gc && do {
++                $data->{ib_ibuf_inserts}    = $1;
++                $data->{ib_ibuf_merged_rec} = $2;
++                $data->{ib_ibuf_merges}     = $3;
++                return 1;
++            };
++            # MySQL >= 5.5
++            m/\Gmerged operations:\n insert (\d+), delete mark \d+, delete \d+\ndiscarded operations:\n insert (\d+), delete mark \d+, delete \d+\n/gc && do {
++                $data->{ib_ibuf_inserts} = $1;
++                $data->{ib_ibuf_merged_rec} = $1 + $2;
++                return 1;
++            };
++            m/\GIbuf: size (\d+), free list len (\d+), seg size (\d+),(?: (\d+) merges)?\n/gc && do {
++                $data->{ib_ibuf_size}     = $1;
++                $data->{ib_ibuf_free_len} = $2;
++                $data->{ib_ibuf_seg_size} = $3;
++                $data->{ib_ibuf_merges}   = $4 if defined $4; # MySQL >= 5.5
++                return 1;
++            };
+ 	}
+     );
+ }
+
+From fc31a78d3163a2af7988a48b7caa348f43398430 Mon Sep 17 00:00:00 2001
+From: y-ken <y.ken.studio@gmail.com>
+Date: Sat, 22 Jun 2013 02:14:02 +0900
+Subject: [PATCH 3/4] fixed indent
+
+---
+ plugins/node.d/mysql_.in | 40 ++++++++++++++++++++--------------------
+ 1 file changed, 20 insertions(+), 20 deletions(-)
+
+diff --git a/plugins/node.d/mysql_.in b/plugins/node.d/mysql_.in
+index cfdceb8f4..ae9c3df5f 100644
+--- a/plugins/node.d/mysql_.in
++++ b/plugins/node.d/mysql_.in
+@@ -1217,26 +1217,26 @@ sub parse_file_io {
+ sub parse_insert_buffer_and_adaptive_hash_index {
+     parse_section(
+ 	sub {
+-            # MySQL < 5.5
+-            m/\G(\d+) inserts, (\d+) merged recs, (\d+) merges\n/gc && do {
+-                $data->{ib_ibuf_inserts}    = $1;
+-                $data->{ib_ibuf_merged_rec} = $2;
+-                $data->{ib_ibuf_merges}     = $3;
+-                return 1;
+-            };
+-            # MySQL >= 5.5
+-            m/\Gmerged operations:\n insert (\d+), delete mark \d+, delete \d+\ndiscarded operations:\n insert (\d+), delete mark \d+, delete \d+\n/gc && do {
+-                $data->{ib_ibuf_inserts} = $1;
+-                $data->{ib_ibuf_merged_rec} = $1 + $2;
+-                return 1;
+-            };
+-            m/\GIbuf: size (\d+), free list len (\d+), seg size (\d+),(?: (\d+) merges)?\n/gc && do {
+-                $data->{ib_ibuf_size}     = $1;
+-                $data->{ib_ibuf_free_len} = $2;
+-                $data->{ib_ibuf_seg_size} = $3;
+-                $data->{ib_ibuf_merges}   = $4 if defined $4; # MySQL >= 5.5
+-                return 1;
+-            };
++      # MySQL < 5.5
++      m/\G(\d+) inserts, (\d+) merged recs, (\d+) merges\n/gc && do {
++        $data->{ib_ibuf_inserts}    = $1;
++        $data->{ib_ibuf_merged_rec} = $2;
++        $data->{ib_ibuf_merges}     = $3;
++        return 1;
++      };
++      # MySQL >= 5.5
++      m/\Gmerged operations:\n insert (\d+), delete mark \d+, delete \d+\ndiscarded operations:\n insert (\d+), delete mark \d+, delete \d+\n/gc && do {
++        $data->{ib_ibuf_inserts} = $1;
++        $data->{ib_ibuf_merged_rec} = $1 + $2;
++        return 1;
++      };
++      m/\GIbuf: size (\d+), free list len (\d+), seg size (\d+),(?: (\d+) merges)?\n/gc && do {
++        $data->{ib_ibuf_size}     = $1;
++        $data->{ib_ibuf_free_len} = $2;
++        $data->{ib_ibuf_seg_size} = $3;
++        $data->{ib_ibuf_merges}   = $4 if defined $4; # MySQL >= 5.5
++        return 1;
++      };
+ 	}
+     );
+ }
+
+From 278cc52be279c1081d2eaa5afaae71d6c6f4e8f3 Mon Sep 17 00:00:00 2001
+From: y-ken <y.ken.studio@gmail.com>
+Date: Sat, 22 Jun 2013 02:30:11 +0900
+Subject: [PATCH 4/4] add verified version for mysql_ plugin
+
+---
+ plugins/node.d/mysql_.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/plugins/node.d/mysql_.in b/plugins/node.d/mysql_.in
+index ae9c3df5f..3914e92b9 100644
+--- a/plugins/node.d/mysql_.in
++++ b/plugins/node.d/mysql_.in
+@@ -9,7 +9,7 @@ mysql_ - Munin plugin to display misc MySQL server status
+ 
+ =head1 APPLICABLE SYSTEMS
+ 
+-Any MySQL platform, tested by the author on MySQL 5.1.29 and 5.0.51
++Any MySQL platform, tested by the author on MySQL 5.6.12 and 5.5.32, 5.1.29, 5.0.51
+ 
+ =head1 CONFIGURATION
+ 
